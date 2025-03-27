@@ -14,12 +14,10 @@ public static class DeepEvalService
     private static readonly string DefaultVenvPath = Path.Combine(DefaultProjectDir, "venv");
     private static readonly string DefaultPythonExecutableWindows = "python.exe"; // System default Python on Windows
     private static readonly string DefaultPythonExecutableUnix = "python"; // System default Python on Linux/Mac
-    
+
     private static bool _venvInitialized = false;
     private static readonly object _lock = new();
     private static DeepEvalConfig _config = new DeepEvalConfig();
-    private static string PythonExecutable = DefaultPythonExecutableWindows;
-    private static string PythonExecutableUnix = DefaultPythonExecutableUnix;
 
     /// <summary>
     /// Sets global configuration for the DeepEvalService.
@@ -29,7 +27,7 @@ public static class DeepEvalService
     {
         if (config == null)
             throw new ArgumentNullException(nameof(config));
-        
+
         lock (_lock)
         {
             _config = config.Clone();
@@ -65,7 +63,7 @@ public static class DeepEvalService
     public static async Task EnsureVirtualEnv()
     {
         if (_venvInitialized) return;
-        
+
         lock (_lock)
         {
             if (_venvInitialized) return;
@@ -73,14 +71,14 @@ public static class DeepEvalService
         }
 
         string venvPath = GetVenvPath();
-        
+
         if (!Directory.Exists(venvPath))
         {
             if (!_config.AutoCreateVenv)
                 throw new InvalidOperationException($"Virtual environment does not exist at {venvPath} and AutoCreateVenv is false.");
-                
+
             LogMessage("Creating virtual environment for DeepEval...", LogLevel.Normal);
-            await RunCommand(_config.PythonPath ?? (Environment.OSVersion.Platform == PlatformID.Win32NT ? 
+            await RunCommand(_config.PythonPath ?? (Environment.OSVersion.Platform == PlatformID.Win32NT ?
                 DefaultPythonExecutableWindows : DefaultPythonExecutableUnix), $"-m venv \"{venvPath}\"");
 
             LogMessage("Installing dependencies...", LogLevel.Normal);
@@ -108,19 +106,18 @@ public static class DeepEvalService
         if (string.IsNullOrEmpty(_config.ModelName))
             throw new InvalidOperationException("ModelName is required to configure a local model");
 
-        await EnsureVirtualEnv();
-
-        string command = "-m deepeval set-local-model";
+        string command = "deepeval set-local-model";
         command += $" --model-name={_config.ModelName}";
-        
+
         if (!string.IsNullOrEmpty(_config.BaseUrl))
             command += $" --base-url=\"{_config.BaseUrl}\"";
-            
+
         if (!string.IsNullOrEmpty(_config.ApiKey))
             command += $" --api-key={_config.ApiKey}";
 
         LogMessage($"Configuring local LLM model: {_config.ModelName}", LogLevel.Normal);
-        await RunCommand(GetPythonPath(), command);
+        await RunCommand("deepeval", command, useVenvBin: true);
+
     }
 
     /// <summary>
@@ -253,14 +250,24 @@ print(result)
     /// </summary>
     private static string GetPythonPath()
     {
-        return Environment.OSVersion.Platform == PlatformID.Win32NT ? PythonExecutable : PythonExecutableUnix;
+        return Environment.OSVersion.Platform == PlatformID.Win32NT ? DefaultPythonExecutableWindows : DefaultPythonExecutableUnix; //todo: support  config override;
     }
 
     /// <summary>
     /// Runs a command-line process and returns its output.
     /// </summary>
-    private static async Task<string> RunCommand(string command, string args)
+    private static async Task<string> RunCommand(string command, string args, bool useVenvBin = false)
     {
+
+        var originalCommand = command;
+        var venvPath = GetVenvPath();
+
+        if (useVenvBin && !string.IsNullOrEmpty(venvPath) && Directory.Exists(venvPath))
+        {
+            command = Environment.OSVersion.Platform == PlatformID.Win32NT
+                ? Path.Combine(venvPath, "Scripts", command + ".exe")
+                : Path.Combine(venvPath, "bin", command);
+        }
         var psi = new ProcessStartInfo
         {
             FileName = command,
@@ -280,7 +287,7 @@ print(result)
         string error = await process.StandardError.ReadToEndAsync();
         if (!string.IsNullOrEmpty(error))
             LogMessage($"Error: {error}", _config.LogLevel == LogLevel.Quiet ? LogLevel.Normal : _config.LogLevel);
-        
+
         LogMessage($"Command output: {output}", LogLevel.Verbose);
         return output.Trim();
     }
@@ -299,17 +306,22 @@ print(result)
     public static async Task<int> RunTests(string testPath, string additionalArgs = "")
     {
         await EnsureVirtualEnv();
-        // We invoke the CLI as: python -m deepeval test run "<testPath>" [additionalArgs]
+        
+        var deepevalPath = Environment.OSVersion.Platform == PlatformID.Win32NT
+     ? Path.Combine(GetVenvPath(), "Scripts", "deepeval.exe")
+     : Path.Combine(GetVenvPath(), "bin", "deepeval");
+
         var psi = new ProcessStartInfo
         {
-            FileName = GetPythonPath(),
-            Arguments = $"-m deepeval test run \"{testPath}\" {additionalArgs}",
+            FileName = deepevalPath,
+            Arguments = $"test run \"{testPath}\" {additionalArgs}",
             RedirectStandardOutput = _config.LogLevel != LogLevel.Verbose,
             RedirectStandardError = _config.LogLevel != LogLevel.Verbose,
             UseShellExecute = false,
             CreateNoWindow = _config.LogLevel == LogLevel.Quiet
         };
-        
+
+
         LogMessage($"Running DeepEval tests in path: {testPath}", LogLevel.Normal);
         using var proc = Process.Start(psi);
         await proc.WaitForExitAsync();
@@ -324,9 +336,9 @@ print(result)
     public static async Task ResetDeepEvalModel()
     {
         await EnsureVirtualEnv();
-        
+
         LogMessage("Unsetting local LLM model configuration", LogLevel.Normal);
-        await RunCommand(GetPythonPath(), "-m deepeval unset-local-model");
+        await RunCommand(GetPythonPath(), "deepeval unset-local-model");
     }
 }
 
